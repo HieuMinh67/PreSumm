@@ -1,13 +1,10 @@
 import gc
 import glob
 import hashlib
-import itertools
 import json
 import os
-import random
 import re
 import subprocess
-from collections import Counter
 from os.path import join as pjoin
 
 import torch
@@ -15,12 +12,14 @@ from multiprocess import Pool
 
 from others.logging import logger
 from others.tokenization import BertTokenizer
-from pytorch_transformers import XLNetTokenizer
 
 from others.utils import clean
 from prepro.utils import _get_word_ngrams
 
 import xml.etree.ElementTree as ET
+
+import pandas as pd
+import codecs
 
 nyt_remove_words = ["photo", "graph", "chart", "map", "table", "drawing"]
 
@@ -30,20 +29,19 @@ def recover_from_corenlp(s):
     s = re.sub(r'\'\' {\w}', '\'\'\g<1>', s)
 
 
-
 def load_json(p, lower):
     source = []
     tgt = []
     flag = False
     for sent in json.load(open(p))['sentences']:
         tokens = [t['word'] for t in sent['tokens']]
-        if (lower):
+        if lower:
             tokens = [t.lower() for t in tokens]
-        if (tokens[0] == '@highlight'):
+        if tokens[0] == '@highlight':
             flag = True
             tgt.append([])
             continue
-        if (flag):
+        if flag:
             tgt[-1].extend(tokens)
         else:
             source.append(tokens)
@@ -53,13 +51,12 @@ def load_json(p, lower):
     return source, tgt
 
 
-
 def load_xml(p):
     tree = ET.parse(p)
     root = tree.getroot()
     title, byline, abs, paras = [], [], [], []
-    title_node = list(root.iter('hedline'))
-    if (len(title_node) > 0):
+    title_node = list(root.iter('headline'))
+    if len(title_node) > 0:
         try:
             title = [p.text.lower().split() for p in list(title_node[0].iter('hl1'))][0]
         except:
@@ -107,6 +104,79 @@ def load_xml(p):
         return None, None
 
 
+from vncorenlp import VnCoreNLP
+
+
+def load_csv(args):
+    df = pd.read_csv(pjoin(args.raw_path, args.csv_name), encoding='utf8')
+    for i in range(len(df)):
+        doc = df['doc'][i] + '\n' + '@highlight' + '\n' + df['ex_summarize'][i]
+        if df['summarize_1'][i]:
+            doc += '\n' + '@highlight' + '\n' + df['summarize_1'][i]
+        if df['summarize_2'][i]:
+            doc += '\n' + '@highlight' + '\n' + df['summarize_2'][i]
+        file_name = pjoin(args.raw_path, (str(i) + '.txt'))
+        with open(file_name, 'w', encoding='utf-8') as story_file:
+            story_file.write(doc)
+
+
+def vn_format_to_json(args):
+    stories_dir = os.path.abspath(args.raw_path)
+    tokenized_stories_dir = os.path.abspath(args.save_path)
+
+    print("Preparing to tokenize %s to %s..." % (stories_dir, tokenized_stories_dir))
+    stories = glob.glob(pjoin(args.raw_path, '*.txt'))
+    annotator = VnCoreNLP("./vncorenlp/VnCoreNLP-1.1.1.jar", annotators="wseg", max_heap_size='-Xmx500m')
+
+    dataset = []
+    for s in stories:
+        tgt = []
+        source = []
+        flag = False
+        f = open(pjoin(stories_dir, s), encoding='utf-8')
+        for line in f:
+            if line == '\n':
+                continue
+            if line == '@highlight\n':
+                flag = True
+                continue
+            tokens = annotator.tokenize(line)
+            if flag:
+                tgt.extend(tokens)
+            else:
+                source = tokens
+        dataset.append({"src": [clean(' '.join(sent)).split() for sent in source],
+                        "tgt": [clean(' '.join(sent)).split() for sent in tgt]})
+
+    print("Tokenizing %i files in %s" % (len(stories), stories_dir))
+    print("VNCoreNLP Tokenizer has finished.")
+
+    valid_test_ratio = 0.01
+    all_size = len(dataset)
+    test_sets = dataset[:int(all_size * valid_test_ratio)]
+    valid_sets = dataset[int(all_size * valid_test_ratio):int(all_size * valid_test_ratio * 2)]
+    train_sets = dataset[int(all_size * valid_test_ratio * 2):]
+    corpora = {'train': train_sets, 'valid': valid_sets, 'test': test_sets}
+    for corpus_type in ['train', 'valid', 'test']:
+        p_ct = 0
+        for split in [corpora[corpus_type][i * args.shard_size:(i + 1) * args.shard_size] for i in range((len(corpora[corpus_type]) + args.shard_size - 1) // args.shard_size)]:
+            pt_file = pjoin(args.save_path, corpus_type + str(p_ct) + '.json')
+            with codecs.open(pt_file, 'w', encoding='utf-8') as save:
+                json.dump(split, save, ensure_ascii=False)
+            p_ct += 1
+
+
+
+    # Check that the tokenized stories directory contains the same number of files as the original directory
+    # num_orig = len(os.listdir(stories_dir))
+    # num_tokenized = len(os.listdir(tokenized_stories_dir))
+    # if num_orig != num_tokenized:
+    #     raise Exception(
+    #         "The tokenized stories directory %s contains %i files, but it should contain the same number as %s (which has %i files). Was there an error during tokenization?" % (
+    #             tokenized_stories_dir, num_tokenized, stories_dir, num_orig))
+    # print("Successfully finished tokenizing %s to %s.\n" % (stories_dir, tokenized_stories_dir))
+
+
 def tokenize(args):
     stories_dir = os.path.abspath(args.raw_path)
     tokenized_stories_dir = os.path.abspath(args.save_path)
@@ -136,6 +206,7 @@ def tokenize(args):
             "The tokenized stories directory %s contains %i files, but it should contain the same number as %s (which has %i files). Was there an error during tokenization?" % (
                 tokenized_stories_dir, num_tokenized, stories_dir, num_orig))
     print("Successfully finished tokenizing %s to %s.\n" % (stories_dir, tokenized_stories_dir))
+
 
 def cal_rouge(evaluated_ngrams, reference_ngrams):
     reference_count = len(reference_ngrams)
@@ -259,7 +330,8 @@ class BertData():
         sent_labels = sent_labels[:len(cls_ids)]
 
         tgt_subtokens_str = '[unused0] ' + ' [unused2] '.join(
-            [' '.join(self.tokenizer.tokenize(' '.join(tt), use_bert_basic_tokenizer=use_bert_basic_tokenizer)) for tt in tgt]) + ' [unused1]'
+            [' '.join(self.tokenizer.tokenize(' '.join(tt), use_bert_basic_tokenizer=use_bert_basic_tokenizer)) for tt
+             in tgt]) + ' [unused1]'
         tgt_subtoken = tgt_subtokens_str.split()[:self.args.max_tgt_ntokens]
         if ((not is_test) and len(tgt_subtoken) < self.args.min_tgt_ntokens):
             return None
@@ -336,16 +408,17 @@ def format_to_lines(args):
             temp.append(hashhex(line.strip()))
         corpus_mapping[corpus_type] = {key.strip(): 1 for key in temp}
     train_files, valid_files, test_files = [], [], []
+    cur = 0
+    valid_test_ratio = 0.01
+    all_size = len(glob.glob(pjoin(args.raw_path, '*.json')))
     for f in glob.glob(pjoin(args.raw_path, '*.json')):
-        real_name = f.split('/')[-1].split('.')[0]
-        if (real_name in corpus_mapping['valid']):
+        if cur < valid_test_ratio * all_size:
             valid_files.append(f)
-        elif (real_name in corpus_mapping['test']):
+        elif cur < valid_test_ratio * 2 * all_size:
             test_files.append(f)
-        elif (real_name in corpus_mapping['train']):
+        else:
             train_files.append(f)
-        # else:
-        #     train_files.append(f)
+        cur += 1
 
     corpora = {'train': train_files, 'valid': valid_files, 'test': test_files}
     for corpus_type in ['train', 'valid', 'test']:
@@ -379,8 +452,6 @@ def _format_to_lines(params):
     print(f)
     source, tgt = load_json(f, args.lower)
     return {'src': source, 'tgt': tgt}
-
-
 
 
 def format_xsum_to_lines(args):
