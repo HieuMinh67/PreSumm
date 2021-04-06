@@ -160,7 +160,7 @@ def vn_format_to_json(args):
     for corpus_type in ['train', 'valid', 'test']:
         p_ct = 0
         for split in [corpora[corpus_type][i * args.shard_size:(i + 1) * args.shard_size] for i in range((len(corpora[corpus_type]) + args.shard_size - 1) // args.shard_size)]:
-            pt_file = pjoin(args.save_path, corpus_type + str(p_ct) + '.json')
+            pt_file = pjoin(args.save_path, corpus_type + '.' + str(p_ct) + '.json')
             with codecs.open(pt_file, 'w', encoding='utf-8') as save:
                 json.dump(split, save, ensure_ascii=False)
             p_ct += 1
@@ -373,7 +373,7 @@ def _format_to_bert(params):
     bert = BertData(args)
 
     logger.info('Processing %s' % json_file)
-    jobs = json.load(open(json_file))
+    jobs = json.load(open(json_file, encoding='utf-8'))
     datasets = []
     for d in jobs:
         source, tgt = d['src'], d['tgt']
