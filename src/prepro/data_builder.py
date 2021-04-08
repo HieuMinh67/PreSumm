@@ -151,7 +151,7 @@ def vn_format_to_json(args):
     print("Tokenizing %i files in %s" % (len(stories), stories_dir))
     print("VNCoreNLP Tokenizer has finished.")
 
-    valid_test_ratio = 0.01
+    valid_test_ratio = 0.1
     all_size = len(dataset)
     test_sets = dataset[:int(all_size * valid_test_ratio)]
     valid_sets = dataset[int(all_size * valid_test_ratio):int(all_size * valid_test_ratio * 2)]
@@ -278,7 +278,7 @@ def hashhex(s):
 class BertData():
     def __init__(self, args):
         self.args = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
+        self.tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-uncased', do_lower_case=True)
 
         self.sep_token = '[SEP]'
         self.cls_token = '[CLS]'
@@ -352,7 +352,7 @@ def format_to_bert(args):
     for corpus_type in datasets:
         a_lst = []
         for json_f in glob.glob(pjoin(args.raw_path, '*' + corpus_type + '.*.json')):
-            real_name = json_f.split('/')[-1]
+            real_name = json_f.split('\\')[-1]
             a_lst.append((corpus_type, json_f, args, pjoin(args.save_path, real_name.replace('json', 'bert.pt'))))
         print(a_lst)
         pool = Pool(args.n_cpus)
